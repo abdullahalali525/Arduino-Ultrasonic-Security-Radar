@@ -1,0 +1,125 @@
+cat << 'EOF' > radar_gui.py
+import math
+import sys
+import pygame
+import serial
+
+SERIAL_PORT = '/dev/ttyACM0'  
+BAUD_RATE = 9600
+
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    print(f"Successfully connected to radar on {SERIAL_PORT}")
+except Exception as e:
+    print(f"Could not open serial port {SERIAL_PORT}: {e}")
+    sys.exit()
+
+pygame.init()
+WIDTH, HEIGHT = 1000, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Tactical Radar HUD - Enhanced Alerts")
+clock = pygame.time.Clock()
+
+BLACK = (10, 20, 10)
+DARK_GREEN = (0, 80, 0)
+BRIGHT_GREEN = (0, 255, 65)
+RED = (255, 30, 30)
+WHITE = (220, 255, 220)
+
+CENTER_X = WIDTH // 2
+CENTER_Y = HEIGHT - 50
+MAX_DISTANCE_CM = 50.0  
+RADAR_RADIUS = 480
+
+targets = {}  
+
+def draw_radar_grid():
+    screen.fill(BLACK)
+    for r_step in range(1, 6):
+        r = int(RADAR_RADIUS * (r_step / 5.0))
+        # Highlight 15cm ring in soft red
+        ring_color = (120, 30, 30) if r_step == 2 else DARK_GREEN
+        pygame.draw.arc(screen, ring_color, 
+                        (CENTER_X - r, CENTER_Y - r, r * 2, r * 2), 
+                        0, math.pi, 2)
+        dist_label = int(r_step * 10)
+        font = pygame.font.SysFont("monospace", 14)
+        text = font.render(f"{dist_label}cm", True, ring_color)
+        screen.blit(text, (CENTER_X + 10, CENTER_Y - r + 4))
+
+    for angle in [30, 60, 90, 120, 150]:
+        rad = math.radians(angle)
+        x = CENTER_X - int(RADAR_RADIUS * math.cos(rad))
+        y = CENTER_Y - int(RADAR_RADIUS * math.sin(rad))
+        pygame.draw.line(screen, DARK_GREEN, (CENTER_X, CENTER_Y), (x, y), 1)
+
+def main():
+    current_angle = 90
+    current_distance = 0
+
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        if ser.in_waiting > 0:
+            raw_line = ser.readline().decode('utf-8', errors='ignore').strip()
+            if ',' in raw_line and raw_line.endswith('.'):
+                try:
+                    clean_line = raw_line.rstrip('.')
+                    angle_str, dist_str = clean_line.split(',')
+                    angle = int(angle_str)
+                    dist = int(dist_str)
+
+                    current_angle = angle
+                    current_distance = dist
+
+                    if 0 < dist <= MAX_DISTANCE_CM:
+                        targets[angle] = dist
+                    else:
+                        targets[angle] = 0
+                except ValueError:
+                    pass
+
+        draw_radar_grid()
+
+        # 1. Plot Targets (Red if <= 15cm, Green if > 15cm)
+        for ang, dist in targets.items():
+            if dist > 0:
+                rad = math.radians(ang)
+                px = CENTER_X - int((dist / MAX_DISTANCE_CM) * RADAR_RADIUS * math.cos(rad))
+                py = CENTER_Y - int((dist / MAX_DISTANCE_CM) * RADAR_RADIUS * math.sin(rad))
+                
+                if dist <= 15:
+                    pygame.draw.circle(screen, RED, (px, py), 10) # Larger Red Blip
+                else:
+                    pygame.draw.circle(screen, BRIGHT_GREEN, (px, py), 6)
+
+        # 2. Draw Sweep Line (Turns RED when obstacle <= 15cm)
+        is_alert = (0 < current_distance <= 15)
+        line_color = RED if is_alert else BRIGHT_GREEN
+        rad = math.radians(current_angle)
+        sweep_x = CENTER_X - int(RADAR_RADIUS * math.cos(rad))
+        sweep_y = CENTER_Y - int(RADAR_RADIUS * math.sin(rad))
+        pygame.draw.line(screen, line_color, (CENTER_X, CENTER_Y), (sweep_x, sweep_y), 4)
+
+        # 3. Telemetry & On-Screen Warning
+        font = pygame.font.SysFont("monospace", 18, bold=True)
+        telemetry = font.render(f"ANGLE: {current_angle}° | DISTANCE: {current_distance} cm", True, WHITE)
+        screen.blit(telemetry, (20, 20))
+
+        if is_alert:
+            alert_font = pygame.font.SysFont("monospace", 24, bold=True)
+            alert_text = alert_font.render("!!! WARNING: PROXIMITY ALERT !!!", True, RED)
+            screen.blit(alert_text, (WIDTH // 2 - 200, 20))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+    ser.close()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
+EOF
